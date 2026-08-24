@@ -357,11 +357,11 @@ def build_wifi_cooker_state_body(apc_response: dict[str, Any]) -> WifiCookerStat
 
 
 def build_a3_payload(apc_response: dict[str, Any]) -> APCUpdate:
-    firmware_version: str = apc_response["firmwareVersion"]
-    is_cooking: bool = apc_response["isCooking"]
-    current_temperature: float = apc_response["currentTemperature"]
-    target_temperature: float = apc_response["targetTemperature"]
-    timer_in_seconds: int = apc_response["timerInSeconds"]
+    firmware_version = apc_response.get("firmwareVersion")
+    is_cooking = bool(apc_response.get("isCooking", False))
+    current_temperature = apc_response.get("currentTemperature")
+    target_temperature = apc_response.get("targetTemperature")
+    timer_in_seconds = apc_response.get("timerInSeconds")
     # unit = apc_response.get("unit")
     # is_timer_running = apc_response.get("isTimerRunning")
     # is_speaker_on = apc_response.get("isSpeakerOn")
@@ -386,14 +386,20 @@ def build_a3_payload(apc_response: dict[str, Any]) -> APCUpdate:
             
     sensors = APCUpdateSensor(
         a3_state=status.name,
-        target_temperature=float(target_temperature),
-        cook_time_remaining=int(timer_in_seconds),
+        target_temperature=(
+            float(target_temperature) if target_temperature is not None else None
+        ),
+        cook_time_remaining=(
+            int(timer_in_seconds) if timer_in_seconds is not None else None
+        ),
         firmware_version=firmware_version,
-        water_temperature=float(current_temperature),
+        water_temperature=(
+            float(current_temperature) if current_temperature is not None else None
+        ),
     )
 
     binary_sensors = APCUpdateBinary(
-        cooking=bool(is_cooking),
+        cooking=is_cooking,
         preheating=bool(status == AnovaState.preheating),
         maintaining=bool(
             status == AnovaState.maintaining or status == AnovaState.timer_expired
@@ -582,6 +588,15 @@ class APCWifiDevice:
     # callers must infer a dead device from silence using this timestamp - the
     # same approach the official Anova app uses.
     last_update_received_at: datetime | None = field(
+        default=None, repr=False, compare=False
+    )
+    # A3/A2-only: raw "state" dict from the last EVENT_APC_STATE message,
+    # merged with each new message before being passed to build_a3_payload.
+    # A3 devices send a full state snapshot on the first push, then omit
+    # top-level keys that haven't changed on subsequent pushes (confirmed
+    # against a real device) - without merging, those omitted fields would
+    # incorrectly read as unset instead of unchanged.
+    last_raw_a3_state: dict[str, Any] | None = field(
         default=None, repr=False, compare=False
     )
 

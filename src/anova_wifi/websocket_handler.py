@@ -102,17 +102,18 @@ class AnovaWebsocketHandler:
                     )
         elif message["command"] == AnovaCommand.EVENT_APC_STATE:
             cooker_id = message["payload"]["cookerId"]
-            if cooker_id not in self.devices:
-                pass
-            device = self.devices[cooker_id]
-            if "job" in message["payload"]["state"]:
-                update = build_wifi_cooker_state_body(
-                    message["payload"]["state"]
-                ).to_apc_update()
+            device = self.devices.get(cooker_id)
+            if device is None:
+                return
+            state = message["payload"]["state"]
+            if "job" in state:
+                update = build_wifi_cooker_state_body(state).to_apc_update()
             elif message["payload"]["type"] == "a3":
-                update = build_a3_payload(message["payload"]["state"])
+                merged_state = {**(device.last_raw_a3_state or {}), **state}
+                device.last_raw_a3_state = merged_state
+                update = build_a3_payload(merged_state)
             elif message["payload"]["type"] in {"a6", "a7"}:
-                update = build_a6_a7_payload(message["payload"]["state"])
+                update = build_a6_a7_payload(state)
             else:
                 return
             device.last_update = update
