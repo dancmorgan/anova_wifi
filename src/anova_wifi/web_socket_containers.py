@@ -383,7 +383,7 @@ def build_a3_payload(apc_response: dict[str, Any]) -> APCUpdate:
         except ValueError:
             _LOGGER.debug("Unrecognized Anova A3 jobStage %r", job_stage)
             status = AnovaA3State.no_state
-    
+            
     sensors = APCUpdateSensor(
         a3_state=status.name,
         target_temperature=float(target_temperature),
