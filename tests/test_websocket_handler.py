@@ -1,3 +1,4 @@
+from copy import deepcopy
 from datetime import UTC, datetime
 from unittest.mock import AsyncMock
 
@@ -10,6 +11,7 @@ from anova_wifi.websocket_handler import (
     WEBSOCKET_HEARTBEAT_SECONDS,
     AnovaWebsocketHandler,
 )
+from tests.example_data import A3_DELTA_MESSAGE, A3_IDLE_MESSAGE
 
 
 @pytest.mark.asyncio
@@ -92,3 +94,30 @@ def test_state_push_caches_last_update_without_a_listener() -> None:
     assert device.last_update_received_at is not None
     assert before <= device.last_update_received_at
     assert device.last_update_received_at <= datetime.now(UTC)
+
+
+def test_a3_delta_update_merges_onto_last_known_state() -> None:
+    """A3 devices send a full state snapshot once, then omit unchanged
+    top-level keys on later pushes. Without merging each push onto the
+    last known state, a delta update would read those omitted fields as
+    unset instead of retaining their last known value. Verified against
+    real EVENT_APC_STATE traffic from an Anova Precision Cooker A3."""
+    handler = AnovaWebsocketHandler(
+        firebase_jwt="firebase_jwt", jwt="jwt", session=AsyncMock()
+    )
+    device = APCWifiDevice(
+        cooker_id="anova random-id", type="a3", paired_at="now", name="test"
+    )
+    handler.devices["anova random-id"] = device
+
+    full_snapshot = deepcopy(A3_IDLE_MESSAGE)
+    full_snapshot["payload"]["state"]["timerInSeconds"] = 840
+    handler.on_message(full_snapshot)
+    assert device.last_update is not None
+    assert device.last_update.sensor.cook_time_remaining == 840
+
+    # A3_DELTA_MESSAGE omits timerInSeconds entirely.
+    handler.on_message(deepcopy(A3_DELTA_MESSAGE))
+
+    assert device.last_update is not None
+    assert device.last_update.sensor.cook_time_remaining == 840

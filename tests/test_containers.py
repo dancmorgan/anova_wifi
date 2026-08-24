@@ -8,6 +8,8 @@ from anova_wifi.web_socket_containers import (
     build_wifi_cooker_state_body,
 )
 from tests.example_data import (
+    A3_DELTA_MESSAGE,
+    A3_IDLE_MESSAGE,
     A3_MESSAGE,
     A4_MESSAGE,
     A6_MESSAGE,
@@ -60,6 +62,27 @@ def test_a3_payload():
     assert resp.sensor.target_temperature == 96.1
     assert resp.sensor.a3_state == AnovaA3State.cooking.name
     assert resp.sensor.cook_time_remaining == 840
+
+
+def test_a3_payload_null_job_stage():
+    """A3 devices send currentJob.jobStage: null while idle - this must
+    degrade to no_state rather than raising and killing the websocket
+    message listener. Verified against a real device."""
+    resp = build_a3_payload(A3_IDLE_MESSAGE["payload"]["state"])
+    assert resp.sensor.a3_state == AnovaA3State.no_state.name
+    assert resp.sensor.cook_time_remaining == 0
+    assert resp.binary_sensor.cooking is False
+
+
+def test_a3_payload_missing_keys_do_not_raise():
+    """A3 devices omit unchanged top-level keys on delta updates - direct
+    indexing used to raise KeyError and kill the websocket message
+    listener. build_a3_payload must tolerate missing keys instead.
+    Verified against a real device."""
+    resp = build_a3_payload(A3_DELTA_MESSAGE["payload"]["state"])
+    assert resp.sensor.a3_state == AnovaA3State.no_state.name
+    assert resp.sensor.cook_time_remaining is None
+    assert resp.sensor.target_temperature == 60
 
 
 def test_a4_payload():

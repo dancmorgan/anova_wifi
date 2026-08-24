@@ -33,6 +33,69 @@ A3_MESSAGE: dict[str, Any] = {
     },
 }
 
+# Captured from a real Anova Precision Cooker A3, firmware ver 4.2.7, idle.
+# currentJob.jobStage is null while idle - build_a3_payload must not raise
+# on this.
+A3_IDLE_MESSAGE: dict[str, Any] = {
+    "command": "EVENT_APC_STATE",
+    "payload": {
+        "cookerId": "anova random-id",
+        "type": "a3",
+        "state": {
+            "firmwareVersion": "ver 4.2.7",
+            "isCooking": False,
+            "currentTemperature": 19.1,
+            "targetTemperature": 60,
+            "timerInSeconds": 0,
+            "unit": "c",
+            "isTimerRunning": False,
+            "isSpeakerOn": True,
+            "isAlarmActive": False,
+            "currentJobID": "",
+            "currentJob": {
+                "jobType": None,
+                "jobStage": None,
+                "targetTemperature": 60,
+                "timerLength": 0,
+                "tempUnit": "c",
+                "thresholdTemperature": None,
+                "thresholdTemperatureUnit": "c",
+            },
+            "isKeepingWarm": False,
+            "isCheckingTemperatureForIceBath": False,
+            "isMonitoringIcebath": False,
+            "isConnected": True,
+        },
+    },
+}
+
+# Captured from the same real A3 session, ~20ms after A3_IDLE_MESSAGE. The
+# device omits currentJobID, currentJob, and timerInSeconds since they're
+# unchanged from the prior push - build_a3_payload must not raise on the
+# missing keys, and the websocket handler must merge this onto the last
+# known state rather than losing those fields.
+A3_DELTA_MESSAGE: dict[str, Any] = {
+    "command": "EVENT_APC_STATE",
+    "payload": {
+        "cookerId": "anova random-id",
+        "type": "a3",
+        "state": {
+            "firmwareVersion": "ver 4.2.7",
+            "isCooking": False,
+            "currentTemperature": 19.1,
+            "targetTemperature": 60,
+            "unit": "c",
+            "isTimerRunning": False,
+            "isSpeakerOn": True,
+            "isAlarmActive": False,
+            "isKeepingWarm": False,
+            "isCheckingTemperatureForIceBath": False,
+            "isMonitoringIcebath": False,
+            "isConnected": True,
+        },
+    },
+}
+
 A4_MESSAGE: dict[str, Any] = {
     "command": "EVENT_APC_STATE",
     "payload": {
