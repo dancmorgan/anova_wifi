@@ -368,17 +368,21 @@ def build_a3_payload(apc_response: dict[str, Any]) -> APCUpdate:
     # is_alarm_active = apc_response.get("isAlarmActive")
     # current_job_id = apc_response.get("currentJobID")
     current_job = apc_response.get("currentJob")
+    job_stage = current_job.get("jobStage") if current_job else None
     # is_keeping_warm = apc_response.get("isKeepingWarming")
     # is_checking_temperature_for_ice_bath = apc_response.get(
     #     "isCheckingTemperatureForIceBath"
     # )
     # is_monitoring_ice_bath = apc_response.get("isMonitoringIcebath")
     # is_connected = apc_response.get("isConnected")
-    if current_job is not None:
-        job_stage: str = current_job["jobStage"]
-        status = AnovaA3State(job_stage)
-    else:
+    if job_stage is None:
         status = AnovaA3State.no_state
+    else:
+        try:
+            status = AnovaA3State(job_stage)
+        except ValueError:
+            _LOGGER.debug("Unrecognized Anova A3 jobStage %r", job_stage)
+            status = AnovaA3State.no_state
     sensors = APCUpdateSensor(
         a3_state=status.name,
         target_temperature=float(target_temperature),
