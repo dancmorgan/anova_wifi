@@ -1,3 +1,4 @@
+import asyncio
 from copy import deepcopy
 from datetime import UTC, datetime
 from unittest.mock import AsyncMock
@@ -5,6 +6,7 @@ from unittest.mock import AsyncMock
 import pytest
 from aiohttp import ClientConnectionResetError
 
+from anova_wifi import websocket_handler as websocket_handler_module
 from anova_wifi.exceptions import WebsocketFailure
 from anova_wifi.web_socket_containers import AnovaCommand, APCWifiDevice
 from anova_wifi.websocket_handler import (
@@ -12,6 +14,27 @@ from anova_wifi.websocket_handler import (
     AnovaWebsocketHandler,
 )
 from tests.example_data import A3_DELTA_MESSAGE, A3_IDLE_MESSAGE
+
+
+class _FakeWebSocket:
+    """A minimal stand-in for ClientWebSocketResponse: async-iterates over a
+    fixed list of messages, then behaves as if the server closed the
+    connection (matching what happens when a device drops off)."""
+
+    def __init__(self, messages: list | None = None) -> None:
+        self._messages = list(messages) if messages else []
+        self.closed = False
+
+    def __aiter__(self) -> "_FakeWebSocket":
+        return self
+
+    async def __anext__(self):
+        if not self._messages:
+            raise StopAsyncIteration
+        return self._messages.pop(0)
+
+    async def close(self) -> None:
+        self.closed = True
 
 
 @pytest.mark.asyncio
@@ -27,6 +50,60 @@ async def test_connect_passes_heartbeat_to_ws_connect() -> None:
     session.ws_connect.assert_awaited_once_with(
         handler.url, heartbeat=WEBSOCKET_HEARTBEAT_SECONDS
     )
+
+    await handler.disconnect()
+
+
+@pytest.mark.asyncio
+async def test_reconnects_after_websocket_drops(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """If the connection dies (heartbeat timeout, NAT/router reset, ...),
+    the listener must not just die - it should reconnect so data starts
+    flowing again once the device comes back, instead of leaving every
+    entity stuck unavailable until HA is restarted."""
+    monkeypatch.setattr(websocket_handler_module, "RECONNECT_INITIAL_DELAY_SECONDS", 0)
+    session = AsyncMock()
+    first_ws = _FakeWebSocket()
+    second_ws = _FakeWebSocket()
+    session.ws_connect.side_effect = [first_ws, second_ws]
+
+    handler = AnovaWebsocketHandler(
+        firebase_jwt="firebase_jwt", jwt="jwt", session=session
+    )
+    await handler.connect()
+
+    for _ in range(50):
+        if session.ws_connect.await_count >= 2:
+            break
+        await asyncio.sleep(0)
+
+    assert session.ws_connect.await_count == 2
+    assert first_ws.closed is True
+    assert handler.ws is second_ws
+
+    await handler.disconnect()
+
+
+@pytest.mark.asyncio
+async def test_stops_reconnecting_after_disconnect(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A deliberate disconnect() must not trigger another reconnect attempt."""
+    monkeypatch.setattr(websocket_handler_module, "RECONNECT_INITIAL_DELAY_SECONDS", 0)
+    session = AsyncMock()
+    session.ws_connect.side_effect = [_FakeWebSocket(), _FakeWebSocket()]
+
+    handler = AnovaWebsocketHandler(
+        firebase_jwt="firebase_jwt", jwt="jwt", session=session
+    )
+    await handler.connect()
+    await handler.disconnect()
+
+    for _ in range(10):
+        await asyncio.sleep(0)
+
+    assert session.ws_connect.await_count == 1
 
 
 @pytest.mark.asyncio

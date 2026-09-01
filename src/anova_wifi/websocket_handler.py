@@ -7,6 +7,7 @@ from datetime import UTC, datetime
 from typing import Any
 
 from aiohttp import (
+    ClientConnectionError,
     ClientConnectionResetError,
     ClientSession,
     ClientWebSocketResponse,
@@ -32,6 +33,12 @@ WEBSOCKET_HEARTBEAT_SECONDS = 30
 # How long to wait for a RESPONSE to a sent command before raising CommandFailure.
 COMMAND_TIMEOUT = 10
 
+# Backoff for reconnecting after the websocket drops unexpectedly (heartbeat
+# timeout, NAT/router reset, etc). Doubles on each failed attempt up to the
+# max, and resets once a connection succeeds again.
+RECONNECT_INITIAL_DELAY_SECONDS = 5
+RECONNECT_MAX_DELAY_SECONDS = 300
+
 
 class AnovaWebsocketHandler:
     def __init__(self, firebase_jwt: str, jwt: str, session: ClientSession):
@@ -44,21 +51,73 @@ class AnovaWebsocketHandler:
         self._message_listener: Future[None] | None = None
         # Requests awaiting a matching RESPONSE message, keyed by requestId.
         self._pending_commands: dict[str, Future[None]] = {}
+        # Set by disconnect() so the reconnect loop knows a dropped
+        # connection was intentional and shouldn't be retried.
+        self._closing = False
 
     async def connect(self) -> None:
+        """Connect and start the supervising listener task.
+
+        Raises WebsocketFailure if this *initial* connection attempt fails.
+        Once connected, later drops are retried automatically in the
+        background (see _run_with_reconnect) instead of raising.
+        """
+        self._closing = False
+        await self._connect_once()
+        self._message_listener = asyncio.ensure_future(self._run_with_reconnect())
+
+    async def _connect_once(self) -> None:
         try:
             self.ws = await self.session.ws_connect(
                 self.url, heartbeat=WEBSOCKET_HEARTBEAT_SECONDS
             )
-        except WebSocketError as ex:
+        except (WebSocketError, ClientConnectionError, TimeoutError, OSError) as ex:
             raise WebsocketFailure("Failed to connect to the websocket") from ex
-        self._message_listener = asyncio.ensure_future(self.message_listener())
 
     async def disconnect(self) -> None:
-        if self.ws is not None:
-            await self.ws.close()
+        self._closing = True
         if self._message_listener is not None:
             self._message_listener.cancel()
+        if self.ws is not None:
+            await self.ws.close()
+
+    async def _reconnect_with_backoff(self) -> None:
+        """Retry _connect_once with growing backoff until it succeeds or
+        disconnect() is called."""
+        delay = RECONNECT_INITIAL_DELAY_SECONDS
+        while not self._closing:
+            try:
+                await self._connect_once()
+            except WebsocketFailure:
+                _LOGGER.warning(
+                    "Anova websocket reconnect attempt failed, retrying in %s seconds",
+                    delay,
+                )
+                await asyncio.sleep(delay)
+                delay = min(delay * 2, RECONNECT_MAX_DELAY_SECONDS)
+                continue
+            return
+
+    async def _run_with_reconnect(self) -> None:
+        """Consume messages until the connection drops, then reconnect with
+        backoff and resume - instead of leaving the listener dead forever."""
+        while not self._closing:
+            try:
+                await self.message_listener()
+            except Exception:
+                # A bad message must not kill reconnection - see docstring.
+                _LOGGER.exception("Anova websocket listener crashed")
+
+            if self._closing:
+                return
+
+            if self.ws is not None and not self.ws.closed:
+                await self.ws.close()
+
+            _LOGGER.warning("Anova websocket disconnected, reconnecting")
+            await self._reconnect_with_backoff()
+            if not self._closing:
+                _LOGGER.info("Anova websocket reconnected")
 
     async def send_command(
         self, command: AnovaCommand, payload: dict[str, Any]
